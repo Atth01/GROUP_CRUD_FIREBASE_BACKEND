@@ -1,6 +1,6 @@
 import express from "express";
-import db from "../config/config.js";
-import { collection, addDoc, getDocs, doc, updateDoc, query, where } from "firebase/firestore";
+import database from "../config/config.js";  // Sesuaikan import untuk Realtime Database
+import { ref, set, get, update, remove, query, orderByChild, equalTo, push } from "firebase/database";
 import bcrypt from "bcryptjs";
 import auth from "../middleware/auth.js";
 
@@ -16,10 +16,10 @@ router.post("/", auth, async (req, res) => {
     }
 
     // Cek email yang sudah ada
-    const q = query(collection(db, "users"), where("email", "==", email));
-    const snapshot = await getDocs(q);
+    const emailRef = query(ref(database, "users"), orderByChild("email"), equalTo(email));
+    const snapshot = await get(emailRef);
 
-    if (!snapshot.empty) {
+    if (snapshot.exists()) {
       return res.status(400).json({ message: "Email sudah terdaftar" });
     }
 
@@ -36,11 +36,13 @@ router.post("/", auth, async (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    const docRef = await addDoc(collection(db, "users"), user);
+    const userRef = ref(database, "users");
+    const newUserRef = push(userRef); // push creates a new unique key for each user
+    await set(newUserRef, user);
 
     // Hapus password dari response
     const userResponse = {
-      id: docRef.id,
+      id: newUserRef.key,
       email,
       ...otherData,
       createdAt: user.createdAt,
@@ -60,17 +62,26 @@ router.post("/", auth, async (req, res) => {
 // Read Users (Protected)
 router.get("/", auth, async (req, res) => {
   try {
-    const q = query(collection(db, "users"), where("deleted", "==", false));
-    const snapshot = await getDocs(q);
-    const users = snapshot.docs.map(doc => {
-      const userData = doc.data();
-      // Hapus data sensitif
-      delete userData.password;
-      return {
-        id: doc.id,
+    const usersRef = query(ref(database, "users"), orderByChild("deleted"), equalTo(false));
+    const snapshot = await get(usersRef);
+
+    if (!snapshot.exists()) {
+      return res.status(200).json({
+        message: "Data user berhasil diambil",
+        users: []
+      });
+    }
+
+    const users = [];
+    snapshot.forEach(doc => {
+      const userData = doc.val();
+      delete userData.password;  // Remove sensitive data
+      users.push({
+        id: doc.key,
         ...userData
-      };
+      });
     });
+
     res.status(200).json({
       message: "Data user berhasil diambil",
       users
@@ -89,14 +100,10 @@ router.put("/:id", auth, async (req, res) => {
 
     // Jika ada update email, cek duplikasi
     if (email) {
-      const q = query(
-        collection(db, "users"),
-        where("email", "==", email),
-        where("deleted", "==", false)
-      );
-      const snapshot = await getDocs(q);
+      const emailRef = query(ref(database, "users"), orderByChild("email"), equalTo(email));
+      const snapshot = await get(emailRef);
 
-      if (!snapshot.empty && snapshot.docs[0].id !== id) {
+      if (snapshot.exists() && Object.keys(snapshot.val())[0] !== id) {
         return res.status(400).json({ message: "Email sudah digunakan" });
       }
     }
@@ -114,8 +121,8 @@ router.put("/:id", auth, async (req, res) => {
       hashedData.password = hashedPassword;
     }
 
-    const userRef = doc(db, "users", id);
-    await updateDoc(userRef, hashedData);
+    const userRef = ref(database, `users/${id}`);
+    await update(userRef, hashedData);
 
     // Hapus password dari response
     delete hashedData.password;
@@ -134,9 +141,9 @@ router.put("/:id", auth, async (req, res) => {
 router.delete("/:id", auth, async (req, res) => {
   try {
     const { id } = req.params;
-    const userRef = doc(db, "users", id);
+    const userRef = ref(database, `users/${id}`);
 
-    await updateDoc(userRef, {
+    await update(userRef, {
       deleted: true,
       updatedAt: new Date().toISOString()
     });
